@@ -61,6 +61,11 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
+# Logs and outputs
+logs/
+results/
+outputs/
+
 # Flask stuff:
 instance/
 .webassets-cache
@@ -144,6 +149,11 @@ ENV/
 env.bak/
 venv.bak/
 
+# Virtual environments
+.venv/
+.flower/
+flwrenv/
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -205,3 +215,14 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+
+# Ray / Flower
+ray_results/
