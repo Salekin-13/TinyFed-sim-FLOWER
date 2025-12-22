@@ -1,4 +1,4 @@
-"""flower-tutorial: A Flower / PyTorch app."""
+"""TinyFed-sim: A Flower / PyTorch app."""
 
 import torch
 import torch.nn as nn
