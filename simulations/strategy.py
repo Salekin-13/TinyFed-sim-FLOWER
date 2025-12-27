@@ -21,6 +21,7 @@ class FedAvgWithClientLogging(FedAvg):
         self.metrics_json_path = metrics_json_path
         self.client_metrics = []  # in-memory buffer
         self.save_path = None
+        self.latest_eval_metrics = {}  # store eval metrics per client
 
 
     def configure_train(
@@ -77,15 +78,26 @@ class FedAvgWithClientLogging(FedAvg):
                 continue
 
             client_id = metric_record.get("client_id")  # <-- use this
+            if client_id is None:  # skip entries without client_id (e.g., global metrics)
+                continue
             key = (server_round, client_id)
             if key in existing:
                 continue
 
+            # Lookup latest eval metrics for this client
+            eval_metrics = self.latest_eval_metrics.get(client_id, {})
+            accuracy = eval_metrics.get("eval_acc")
+            eval_loss = eval_metrics.get("eval_loss")
+
             self.client_metrics.append({
                 "round": server_round,
                 "client_id": client_id,
+                "train_loss": metric_record.get("train_loss"),
+                "eval_loss": eval_loss,
+                "client_accuracy": accuracy,
                 "training_time": metric_record.get("training_time"),
                 "peak_ram_usage_kb": metric_record.get("peak_ram_usage_kb"),
+                "global_train_loss": agg_metrics.get("train_loss") if agg_metrics else None,
             })
 
         with open(metrics_path, "w") as f:
@@ -94,8 +106,21 @@ class FedAvgWithClientLogging(FedAvg):
         return agg_arrays, agg_metrics
 
 
+    def aggregate_evaluate(
+        self, server_round: int, results: List[Message]
+    ) -> Optional[MetricRecord]:
+        agg_metrics = super().aggregate_evaluate(server_round, results)
 
+        # Store per-client evaluation metrics for merging later
+        for message in results:
+            metrics = message.content.get("metrics")
+            if metrics is None:
+                continue
+            client_id = metrics.get("client_id")
+            if client_id is not None:
+                self.latest_eval_metrics[client_id] = metrics
 
+        return agg_metrics
 
     
     def start(
@@ -195,6 +220,7 @@ class FedAvgWithClientLogging(FedAvg):
             # -----------------------------------------------------------------
 
             # Centralized evaluation
+            # Centralized evaluation
             if evaluate_fn:
                 log(INFO, "Global evaluation")
                 res = evaluate_fn(current_round, arrays)
@@ -203,6 +229,29 @@ class FedAvgWithClientLogging(FedAvg):
                     result.evaluate_metrics_serverapp[current_round] = res
                     # Maybe save to disk if new best is found
                     self._update_best_acc(current_round, res["accuracy"], arrays)
+
+                    # --- Append global metrics to JSON ---
+                    metrics_path = Path(self.metrics_json_path)
+                    if metrics_path.exists():
+                        try:
+                            with open(metrics_path, "r") as f:
+                                self.client_metrics = json.load(f)
+                        except json.JSONDecodeError:
+                            self.client_metrics = []
+
+                    self.client_metrics.append({
+                        "round": current_round,
+                        "client_id": "GLOBAL",  # Mark as global
+                        "train_loss": agg_train_metrics.get("train_loss") if agg_train_metrics else None,
+                        "eval_loss": res.get("loss"),
+                        "global_accuracy": res.get("accuracy"),
+                        "training_time": None,
+                        "peak_ram_usage_kb": None,
+                    })
+
+                    with open(metrics_path, "w") as f:
+                        json.dump(self.client_metrics, f, indent=2)
+
                     
 
 

@@ -231,3 +231,4 @@ ray_results/
 # Ignore client metrics and final model
 client_metrics.json
 final_model.pt
+*.pth

@@ -112,6 +112,7 @@ def evaluate(msg: Message, context: Context):
 
     # Construct and return reply Message
     metrics = {
+        "client_id": context.node_id,
         "eval_loss": eval_loss,
         "eval_acc": eval_acc,
         "num-examples": len(valloader.dataset),
