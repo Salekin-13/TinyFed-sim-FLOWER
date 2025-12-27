@@ -153,6 +153,7 @@ venv.bak/
 .venv/
 .flower/
 flwrenv/
+flenvx/
 
 # Spyder project settings
 .spyderproject
@@ -226,3 +227,7 @@ Thumbs.db
 
 # Ray / Flower
 ray_results/
+
+# Ignore client metrics and final model
+client_metrics.json
+final_model.pt

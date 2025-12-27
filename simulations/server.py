@@ -1,11 +1,14 @@
 """TinyFed-sim: A Flower / PyTorch app."""
 
 import torch
+from pathlib import Path
 from flwr.app import ArrayRecord, ConfigRecord, Context
 from flwr.serverapp import Grid, ServerApp
-from flwr.serverapp.strategy import FedAvg, FedAdagrad 
+from simulations.strategy import FedAvgWithClientLogging 
 
 from simulations.task import Net, central_evaluate
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 # Create ServerApp
 app = ServerApp()
@@ -24,9 +27,14 @@ def main(grid: Grid, context: Context) -> None:
     global_model = Net()
     arrays = ArrayRecord(global_model.state_dict())
 
-    # Initialize FedAvg strategy
-    strategy = FedAvg(fraction_train=fraction_train)
-    #strategy = FedAdagrad(fraction_train=fraction_train)    
+    # Initialize custom FedAvg strategy
+    metrics_path = PROJECT_ROOT / "client_metrics.json"
+
+    strategy = FedAvgWithClientLogging(
+        fraction_train=fraction_train,
+        metrics_json_path=str(metrics_path),
+    )
+
 
     # Start strategy, run FedAvg for `num_rounds`
     result = strategy.start(
