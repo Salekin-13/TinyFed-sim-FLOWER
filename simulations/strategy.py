@@ -13,15 +13,25 @@ from flwr.serverapp.strategy import FedAvg, Result
 from flwr.common import MetricRecord
 from flwr.server.client_proxy import ClientProxy
 
+from datetime import datetime
+from typing import Optional
+
 PROJECT_NAME = "TinyFed-sim"
 
 class FedAvgWithClientLogging(FedAvg):
-    def __init__(self, *, metrics_json_path: str, **kwargs):
+    def __init__(self, *, metrics_json_path: str, experiment_id: Optional[str] = None, **kwargs):
         super().__init__(**kwargs)
         self.metrics_json_path = metrics_json_path
         self.client_metrics = []  # in-memory buffer
         self.save_path = None
         self.latest_eval_metrics = {}  # store eval metrics per client
+
+        # --- experiment id ---
+        self.experiment_id = (
+            experiment_id
+            if experiment_id is not None
+            else datetime.now().strftime("%Y%m%d_%H%M%S")
+        )
 
 
     def configure_train(
@@ -68,9 +78,11 @@ class FedAvgWithClientLogging(FedAvg):
                 self.client_metrics = []
 
         existing = {
-            (m["round"], m["client_id"])
+            (m.get("round"), m.get("client_id"))
             for m in self.client_metrics
+            if "round" in m and "client_id" in m
         }
+
 
         for message in results:
             metric_record = message.content.get("metrics")
@@ -90,13 +102,14 @@ class FedAvgWithClientLogging(FedAvg):
             eval_loss = eval_metrics.get("eval_loss")
 
             self.client_metrics.append({
+                "experiment_id": self.experiment_id,
                 "round": server_round,
                 "client_id": client_id,
                 "train_loss": metric_record.get("train_loss"),
                 "eval_loss": eval_loss,
                 "client_accuracy": accuracy,
                 "training_time": metric_record.get("training_time"),
-                "peak_ram_usage_kb": metric_record.get("peak_ram_usage_kb"),
+                "peak_ram_usage_MB": metric_record.get("peak_ram_usage_MB"),
                 "global_train_loss": agg_metrics.get("train_loss") if agg_metrics else None,
             })
 
@@ -136,6 +149,25 @@ class FedAvgWithClientLogging(FedAvg):
         ] = None,
     ) -> Result:
         """Start the federated learning strategy."""
+
+        metrics_path = Path(self.metrics_json_path)
+
+        if metrics_path.exists():
+            try:
+                with open(metrics_path, "r") as f:
+                    self.client_metrics = json.load(f)
+            except json.JSONDecodeError:
+                self.client_metrics = []
+
+        self.client_metrics.append({
+            "experiment_id": self.experiment_id,
+            "type": "experiment_start",
+            "timestamp": time.time(),
+        })
+
+        with open(metrics_path, "w") as f:
+            json.dump(self.client_metrics, f, indent=2)
+
 
         # Keep track of best acc
         self.best_accuracy = 0.0
@@ -240,13 +272,14 @@ class FedAvgWithClientLogging(FedAvg):
                             self.client_metrics = []
 
                     self.client_metrics.append({
+                        "experiment_id": self.experiment_id,
                         "round": current_round,
                         "client_id": "GLOBAL",  # Mark as global
                         "train_loss": agg_train_metrics.get("train_loss") if agg_train_metrics else None,
                         "eval_loss": res.get("loss"),
                         "global_accuracy": res.get("accuracy"),
                         "training_time": None,
-                        "peak_ram_usage_kb": None,
+                        "peak_ram_usage_MB": None,
                     })
 
                     with open(metrics_path, "w") as f:

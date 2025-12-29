@@ -1,67 +1,130 @@
 """TinyFed-sim: A Flower / PyTorch app."""
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+import numpy as np
+from datasets import load_dataset
+from models.cnn import Net
+
 from flwr_datasets import FederatedDataset
-from flwr_datasets.partitioner import IidPartitioner
+from flwr_datasets.partitioner import DirichletPartitioner
 from torch.utils.data import DataLoader
 from torchvision.transforms import Compose, Normalize, ToTensor
 
 from datasets import load_dataset
 from flwr.app import ArrayRecord, MetricRecord
 
+fds = None
+GLOBAL_TESTSET = None
+INITIALIZED = False
 
-class Net(nn.Module):
-    """Model (simple CNN adapted from 'PyTorch: A 60 Minute Blitz')"""
-
-    def __init__(self):
-        super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16 * 5 * 5, 120)
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 10)
-
-    def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = x.view(-1, 16 * 5 * 5)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)
+TEST_WRITER_FRACTION = 0.2
+SEED = 42
 
 
-fds = None  # Cache FederatedDataset
+def build_global_test_writers():
+    ds = load_dataset("flwrlabs/femnist", split="train")
 
-pytorch_transforms = Compose([ToTensor(), Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+    writers = np.unique(ds["hsf_id"])
+    rng = np.random.default_rng(SEED)
+
+    test_writers = set(
+        rng.choice(
+            writers,
+            size=int(len(writers) * TEST_WRITER_FRACTION),
+            replace=False,
+        )
+    )
+
+    return test_writers
+
+def build_global_test_datasets(test_writer_fraction=0.2, seed=SEED):
+    ds = load_dataset("flwrlabs/femnist", split="train")
+
+    test_writers = build_global_test_writers(
+        test_writer_fraction=test_writer_fraction,
+        seed=seed,
+    )
+
+    test_ds = ds.filter(lambda x: x["hsf_id"] in test_writers)
+
+    return test_ds
+
+def make_preprocessor(test_writers):
+    def preprocessor(ds_dict):
+        # Filter TRAIN split only
+        ds_dict["train"] = ds_dict["train"].filter(
+            lambda x: x["hsf_id"] not in test_writers
+        )
+        return ds_dict
+    return preprocessor
+
+
+def init_client_datasets(num_partitions: int):
+    global fds
+    if fds is not None:
+        return
+
+    test_writers = build_global_test_writers()
+
+    partitioner = DirichletPartitioner(
+        num_partitions=num_partitions,
+        alpha=0.1,
+        partition_by="hsf_id",
+        shuffle=True,
+        seed=SEED,
+    )
+
+    fds = FederatedDataset(
+        dataset="flwrlabs/femnist",
+        partitioners={"train": partitioner},
+        preprocessor=lambda d: {
+            "train": d["train"].filter(
+                lambda x: x["hsf_id"] not in test_writers
+            )
+        },
+    )
+
+
+
+def init_server_testset():
+    global GLOBAL_TESTSET
+    if GLOBAL_TESTSET is not None:
+        return
+
+    test_writers = build_global_test_writers()
+    full_ds = load_dataset("flwrlabs/femnist", split="train")
+
+    GLOBAL_TESTSET = full_ds.filter(
+        lambda x: x["hsf_id"] in test_writers
+    )
+
+
+
+pytorch_transforms = Compose([ToTensor(), 
+                              Normalize((0.5, ), (0.5, ))
+                              ])
 
 
 def apply_transforms(batch):
     """Apply transforms to the partition from FederatedDataset."""
-    batch["img"] = [pytorch_transforms(img) for img in batch["img"]]
+    batch["image"] = [pytorch_transforms(img) for img in batch["image"]]
     return batch
 
 
 def load_data(partition_id: int, num_partitions: int):
-    """Load partition CIFAR10 data."""
-    # Only initialize `FederatedDataset` once
-    global fds
-    if fds is None:
-        partitioner = IidPartitioner(num_partitions=num_partitions)
-        fds = FederatedDataset(
-            dataset="uoft-cs/cifar10",
-            partitioners={"train": partitioner},
-        )
+    init_client_datasets(num_partitions)
+
     partition = fds.load_partition(partition_id)
-    # Divide data on each node: 80% train, 20% test
-    partition_train_test = partition.train_test_split(test_size=0.2, seed=42)
-    # Construct dataloaders
-    partition_train_test = partition_train_test.with_transform(apply_transforms)
-    trainloader = DataLoader(partition_train_test["train"], batch_size=32, shuffle=True)
-    testloader = DataLoader(partition_train_test["test"], batch_size=32)
+
+    split = partition.train_test_split(test_size=0.2, seed=SEED)
+    split = split.with_transform(apply_transforms)
+
+    trainloader = DataLoader(split["train"], batch_size=32, shuffle=True)
+    testloader = DataLoader(split["test"], batch_size=32)
+
     return trainloader, testloader
+
+
 
 
 def train(net, trainloader, epochs, lr, device):
@@ -73,8 +136,8 @@ def train(net, trainloader, epochs, lr, device):
     running_loss = 0.0
     for _ in range(epochs):
         for batch in trainloader:
-            images = batch["img"].to(device)
-            labels = batch["label"].to(device)
+            images = batch["image"].to(device)
+            labels = batch["character"].to(device)
             optimizer.zero_grad()
             loss = criterion(net(images), labels)
             loss.backward()
@@ -91,8 +154,8 @@ def test(net, testloader, device):
     correct, loss = 0, 0.0
     with torch.no_grad():
         for batch in testloader:
-            images = batch["img"].to(device)
-            labels = batch["label"].to(device)
+            images = batch["image"].to(device)
+            labels = batch["character"].to(device)
             outputs = net(images)
             loss += criterion(outputs, labels).item()
             correct += (torch.max(outputs.data, 1)[1] == labels).sum().item()
@@ -101,31 +164,26 @@ def test(net, testloader, device):
     return loss, accuracy
 
 def central_evaluate(server_round: int, arrays: ArrayRecord) -> MetricRecord:
-    """Evaluate model on the server side."""
+    init_server_testset()
 
-    # Load the model and initialize it with the received weights
     model = Net()
     model.load_state_dict(arrays.to_torch_state_dict())
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model.to(device)
 
-    # Load the entire CIFAR10 test dataset
-    # It's a huggingface dataset, so we can load it directly and apply transforms
-    cifar10_test = load_dataset("cifar10", split="test")
-    pytorch_transforms = Compose(
-        [ToTensor(), Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    model.eval()
+
+    testset = GLOBAL_TESTSET.with_transform(apply_transforms)
+
+    testloader = DataLoader(
+        testset,
+        batch_size=64,
+        shuffle=False,
     )
 
-    # Define transforms and construct DataLoader for the test set
-    def apply_transforms(batch):
-        batch["img"] = [pytorch_transforms(img) for img in batch["img"]]
-        return batch
-
-    testset = cifar10_test.with_transform(apply_transforms)
-    testloader = DataLoader(testset, batch_size=64)
-
-    # Evaluate the model on the test set
     loss, accuracy = test(model, testloader, device)
 
-    # Return the evaluation metrics
-    return MetricRecord({"accuracy": accuracy, "loss": loss})
+    return MetricRecord({
+        "accuracy": accuracy,
+        "loss": loss,
+    })

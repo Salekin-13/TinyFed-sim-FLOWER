@@ -6,7 +6,8 @@ from flwr.app import ArrayRecord, ConfigRecord, Context
 from flwr.serverapp import Grid, ServerApp
 from simulations.strategy import FedAvgWithClientLogging 
 
-from simulations.task import Net, central_evaluate
+from simulations.task import central_evaluate
+from models.cnn import Net
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,6 +33,8 @@ def main(grid: Grid, context: Context) -> None:
 
     strategy = FedAvgWithClientLogging(
         fraction_train=fraction_train,
+        fraction_evaluate=0.4,
+        min_evaluate_nodes=1,
         metrics_json_path=str(metrics_path),
     )
 
