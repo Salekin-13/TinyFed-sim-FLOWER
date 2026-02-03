@@ -1,4 +1,4 @@
-# Simulating TinyML-class Hardware in Flower
+# Simulating TinyML-class Learning in Flower
 
 Re-implementation of the federated learning setup from  
 *“Optimizing Federated Learning on TinyML Devices for Privacy Protection and Energy Efficiency in IoT Networks”* using the **Flower** framework.
